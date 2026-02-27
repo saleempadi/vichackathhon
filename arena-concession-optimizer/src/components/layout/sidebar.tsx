@@ -8,6 +8,7 @@ const navItems = [
   { href: '/', label: 'Overview', icon: '📊' },
   { href: '/locations', label: 'Locations', icon: '📍' },
   { href: '/gameday', label: 'Game Day', icon: '🏒' },
+  { href: '/simulate', label: 'Simulation', icon: '⏱️' },
   { href: '/predictions', label: 'Predictions', icon: '🔮' },
   { href: '/insights', label: 'AI Insights', icon: '🤖' },
   { href: '/fan', label: 'Fan Finder', icon: '📱' },

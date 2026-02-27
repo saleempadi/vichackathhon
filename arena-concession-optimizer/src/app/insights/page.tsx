@@ -28,6 +28,7 @@ export default function InsightsPage() {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<InsightResult[]>([]);
+  const [authTokenMissing, setAuthTokenMissing] = useState(false);
 
   async function askQuestion(q: string) {
     setLoading(true);
@@ -38,7 +39,11 @@ export default function InsightsPage() {
         body: JSON.stringify({ question: q }),
       });
       const data = await res.json();
-      setResults(prev => [{ ...data, question: q }, ...prev]);
+      if (data.code === 'AUTH_TOKEN_MISSING') {
+        setAuthTokenMissing(true);
+      } else {
+        setResults(prev => [{ ...data, question: q }, ...prev]);
+      }
     } catch (err: any) {
       setResults(prev => [{ answer: `Error: ${err.message}`, sql: null, data: null, question: q }, ...prev]);
     }
@@ -53,6 +58,15 @@ export default function InsightsPage() {
         <p className="text-gray-500 mt-1">Ask natural language questions about your concession data</p>
       </div>
 
+      {/* Auth Token Missing Banner */}
+      {authTokenMissing && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm font-medium text-amber-800">
+            AI Insights requires a <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs">CLAUDE_AUTH_TOKEN</code> environment variable. Add it to your <code className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-xs">.env.local</code> file to enable this feature.
+          </p>
+        </div>
+      )}
+
       {/* Question Input */}
       <Card>
         <CardContent className="pt-6">
@@ -61,12 +75,13 @@ export default function InsightsPage() {
               placeholder="Ask a question about concession data..."
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && question.trim() && askQuestion(question)}
+              onKeyDown={(e) => e.key === 'Enter' && question.trim() && !authTokenMissing && askQuestion(question)}
+              disabled={authTokenMissing}
               className="flex-1"
             />
             <Button
               onClick={() => question.trim() && askQuestion(question)}
-              disabled={loading || !question.trim()}
+              disabled={loading || !question.trim() || authTokenMissing}
             >
               {loading ? 'Thinking...' : 'Ask'}
             </Button>
@@ -78,7 +93,7 @@ export default function InsightsPage() {
               <button
                 key={q}
                 onClick={() => askQuestion(q)}
-                disabled={loading}
+                disabled={loading || authTokenMissing}
                 className="text-xs px-3 py-1.5 border rounded-full text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors disabled:opacity-50"
               >
                 {q}

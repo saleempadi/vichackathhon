@@ -4,12 +4,9 @@ import {
   getCategoryMixForFan,
   getLocationCategories,
   getTopItemsByLocation,
+  getHistoricalCapacityPerStand,
+  getSeatZones,
 } from '@/lib/queries';
-import {
-  estimateWaitForLocation,
-  blendedServiceRate,
-  estimateStaffCount,
-} from '@/lib/queueing';
 
 // Location positions for the arena map
 const locationPositions: Record<string, { x: number; y: number; side: string }> = {
@@ -20,6 +17,13 @@ const locationPositions: Record<string, { x: number; y: number; side: string }> 
   'ReMax Fan Deck': { x: 280, y: 330, side: 'South End' },
   'TacoTacoTaco': { x: 280, y: 85, side: 'Main Concourse (N)' },
 };
+
+const BASE_WAIT = 1.2;
+const WAIT_SCALE = 6;
+/** Softer effective capacity so utilization is higher → more visible wait spread (e.g. 2–8+ min) */
+const CAPACITY_FACTOR = 0.65;
+const WAIT_CAP_MINUTES = 10;
+const WALK_SPEED_M_PER_MIN = 80;
 
 // Game period definitions relative to game start time
 function getGamePeriods(gameTimeStr: string) {
@@ -90,22 +94,50 @@ export async function GET(req: NextRequest) {
   const gameTime = searchParams.get('gameTime') || '19:05';
   const categoryFilter = searchParams.get('category') || null;
   const periodOverride = searchParams.get('period') || null;
+  const zoneId = searchParams.get('zone_id') || null;
+  const preferredStand = searchParams.get('preferred_stand') || null;
+  const simTimeIso = searchParams.get('sim_time') || null;
 
   try {
+    const capacityPerStand = getHistoricalCapacityPerStand();
+
     // Fetch all data
     const demandCurve = getDemandCurve(opponent, dayOfWeek) as any[];
     const categoryMix = getCategoryMixForFan(opponent, dayOfWeek) as any[];
     const locationCats = getLocationCategories() as any[];
     const topItems = getTopItemsByLocation(opponent, dayOfWeek) as any[];
+    const seatZones = getSeatZones();
 
-    // Determine current period
+    // Determine current period or use sim_time for bucket
+    let targetHour: number;
+    let targetMinBucket: number;
+    let currentPeriod: string;
+
+    if (simTimeIso) {
+      try {
+        const d = new Date(simTimeIso);
+        targetHour = d.getHours();
+        targetMinBucket = Math.floor(d.getMinutes() / 10) * 10;
+        currentPeriod = periodOverride || 'Simulated';
+      } catch {
+        const periods = getGamePeriods(gameTime);
+        const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+        currentPeriod = periodOverride || getCurrentPeriod(periods, nowMin);
+        const tb = periodToTimeBucket(currentPeriod, gameTime);
+        targetHour = tb.hour;
+        targetMinBucket = tb.minBucket;
+      }
+    } else {
+      const periodList = getGamePeriods(gameTime);
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      currentPeriod = periodOverride || getCurrentPeriod(periodList, nowMin);
+      const tb = periodToTimeBucket(currentPeriod, gameTime);
+      targetHour = tb.hour;
+      targetMinBucket = tb.minBucket;
+    }
+
     const periods = getGamePeriods(gameTime);
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
-    const currentPeriod = periodOverride || getCurrentPeriod(periods, nowMin);
-
-    // Get the time bucket for the current period
-    const { hour: targetHour, minBucket: targetMinBucket } = periodToTimeBucket(currentPeriod, gameTime);
 
     // Build category mix by location
     const catMixByLocation: Record<string, { category: string; avg_items: number }[]> = {};
@@ -170,21 +202,27 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Compute wait times for each location
+    // Compute wait times: softer capacity + power curve so many stands show >1 min for demo
     const locations = Object.keys(locationPositions).map((name) => {
-      const arrivalRate = (demandByLocation[name] || 0) / 10; // items per minute (from 10-min bucket)
-      const catMix = catMixByLocation[name] || [];
-      const peakRate = (peakDemandByLocation[name] || 1) / 10;
-      const categories = locCategories[name] || [];
+      const itemsPer10Min = demandByLocation[name] || 0;
+      const itemsPerMin = itemsPer10Min / 10;
+      const capacity = capacityPerStand[name] ?? 1.2;
+      const effectiveCapacity = capacity * CAPACITY_FACTOR;
+      const utilization = effectiveCapacity > 0 ? itemsPerMin / effectiveCapacity : 0;
+      const rawWait = BASE_WAIT + Math.pow(Math.min(utilization, 3), 1.2) * WAIT_SCALE;
+      const waitMinutes = Math.min(WAIT_CAP_MINUTES, rawWait);
+      const waitMinutesRounded = Math.round(waitMinutes * 10) / 10;
 
-      const estimate = estimateWaitForLocation(name, arrivalRate, catMix, peakRate);
+      let trafficLevel: 'low' | 'medium' | 'high' = 'low';
+      if (waitMinutesRounded >= 5) trafficLevel = 'high';
+      else if (waitMinutesRounded >= 2) trafficLevel = 'medium';
 
       return {
         name,
-        waitMinutes: estimate.waitMinutes,
-        trafficLevel: estimate.trafficLevel,
+        waitMinutes: waitMinutesRounded,
+        trafficLevel,
         topItems: topItemsByLoc[name] || [],
-        categories,
+        categories: locCategories[name] || [],
         position: locationPositions[name],
       };
     });
@@ -200,7 +238,55 @@ export async function GET(req: NextRequest) {
     // Sort by wait time
     filteredLocations.sort((a, b) => a.waitMinutes - b.waitMinutes);
 
-    // Generate recommendation
+    // Route-to-stand mode: if preferred_stand set, compute walk from zone and return that stand + top 2 faster alternatives
+    let routeToStandResult: {
+      preferred: { name: string; walkMinutes: number; waitMinutes: number; roundTripMinutes: number };
+      alternatives: { name: string; walkMinutes: number; waitMinutes: number; roundTripMinutes: number }[];
+    } | null = null;
+
+    if (preferredStand && zoneId && locationPositions[preferredStand]) {
+      try {
+        const { getDb } = await import('@/lib/db');
+        const db = getDb();
+        const zoneDistances = db
+          .prepare('SELECT location, distance_m FROM zone_distances WHERE zone_id = ?')
+          .all(zoneId) as { location: string; distance_m: number }[];
+        const distMap = new Map(zoneDistances.map((r) => [r.location, r.distance_m]));
+
+        const walk = (locName: string) => (distMap.get(locName) ?? 120) / WALK_SPEED_M_PER_MIN;
+        const stand = locations.find((l) => l.name === preferredStand);
+        if (stand) {
+          const walkMin = walk(preferredStand);
+          const roundTrip = 2 * walkMin + stand.waitMinutes;
+          const others = filteredLocations
+            .filter((l) => l.name !== preferredStand)
+            .slice(0, 2)
+            .map((l) => ({
+              name: l.name,
+              walkMinutes: walk(l.name),
+              waitMinutes: l.waitMinutes,
+              roundTripMinutes: 2 * walk(l.name) + l.waitMinutes,
+            }));
+          routeToStandResult = {
+            preferred: {
+              name: preferredStand,
+              walkMinutes: Math.round(walkMin * 10) / 10,
+              waitMinutes: stand.waitMinutes,
+              roundTripMinutes: Math.round(roundTrip * 10) / 10,
+            },
+            alternatives: others.map((o) => ({
+              ...o,
+              walkMinutes: Math.round(o.walkMinutes * 10) / 10,
+              roundTripMinutes: Math.round(o.roundTripMinutes * 10) / 10,
+            })),
+          };
+        }
+      } catch {
+        routeToStandResult = null;
+      }
+    }
+
+    // Generate recommendation (find-fastest mode)
     const best = filteredLocations[0];
     const recommendation = best
       ? {
@@ -225,6 +311,8 @@ export async function GET(req: NextRequest) {
       allLocations: locations,
       recommendation,
       gameMoments,
+      seatZones,
+      routeToStand: routeToStandResult,
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

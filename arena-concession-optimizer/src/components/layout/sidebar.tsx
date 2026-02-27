@@ -11,7 +11,7 @@ const navItems = [
   { href: '/simulate', label: 'Simulation', icon: '⏱️' },
   { href: '/predictions', label: 'Predictions', icon: '🔮' },
   { href: '/insights', label: 'AI Insights', icon: '🤖' },
-  { href: '/fan', label: 'Fan Finder', icon: '📱' },
+  { href: '/fan', label: 'Fan Finder', icon: '📱', newTab: true },
 ];
 
 export function Sidebar() {
@@ -28,6 +28,8 @@ export function Sidebar() {
           <Link
             key={item.href}
             href={item.href}
+            target={item.newTab ? '_blank' : undefined}
+            rel={item.newTab ? 'noopener noreferrer' : undefined}
             className={cn(
               'flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors',
               pathname === item.href

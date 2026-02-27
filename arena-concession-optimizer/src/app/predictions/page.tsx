@@ -239,6 +239,7 @@ export default function PredictionsPage() {
               <a
                 href={`/fan?opponent=${encodeURIComponent(selectedGame.opponent)}&dayOfWeek=${encodeURIComponent(selectedGame.day)}&gameTime=${encodeURIComponent(to24h(selectedGame.time))}`}
                 target="_blank"
+                rel="noopener noreferrer"
                 className="inline-block mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
               >
                 Preview Fan Page

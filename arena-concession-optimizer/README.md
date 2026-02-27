@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Arena Concession Optimizer — Victoria Royals
 
-## Getting Started
+Data-driven dashboard and fan-facing mobile tool for concession operations at Save-On-Foods Memorial Centre (Victoria Royals, WHL). Built for VTN26 hackathon.
 
-First, run the development server:
+## Tech Stack
+
+- **Framework**: Next.js 16 (App Router), React 19, TypeScript
+- **Styling**: Tailwind CSS v4, shadcn/ui
+- **Charts**: Recharts
+- **Database**: SQLite via better-sqlite3 (read-only in app; `data/arena.db`)
+- **AI**: Claude API (@anthropic-ai/sdk) for natural language insights
+- **Data**: CSVs + GameDetails.xlsx → 6 concession locations
+
+## Simulation: speed and bucket
+
+The simulation replays a historical game day as live concession demand. Two controls drive how it runs:
+
+- **Bucket size** (e.g. 1 or 5 minutes): how much *simulated* game time each tick represents. One tick = one bucket of transactions.
+- **Speed** (e.g. 30× or 60×): how fast simulated time advances relative to real time. The formula is **real_tick_ms = bucket_ms ÷ speed**. Example: bucket = 300 s (5 min), speed = 60 → one tick every 5 seconds real time, so 1 real second = 60 simulated seconds. Wait times and crowd indices are estimated from historical capacity (75th percentile of items per minute per stand) and a simple utilization-based formula.
+
+## How to run
+
+### 1. Seed the database
+
+Place your game data (e.g. **GameDetails.xlsx** and **items-*.csv** files) in a folder named `data` that is a **sibling** of `arena-concession-optimizer` (e.g. `your-repo/data/` and `your-repo/arena-concession-optimizer/`). Then:
+
+```bash
+cd arena-concession-optimizer
+npm install
+npm run seed
+```
+
+This builds `data/arena.db`, including games, transactions, seat zones, zone distances, item availability, and puck drop times when present in GameDetails.
+
+### 2. Start the app
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 3. Key pages
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **[/simulate](http://localhost:3000/simulate)** — Simulation mode: pick a game date (from the DB dropdown), set speed and bucket size, start the stream. You get a real-time clock, per-stand metrics, arena heatmap, and an optional “Game started” / “Pre-game” badge when puck drop is in the data.
+- **[/fan](http://localhost:3000/fan)** — Fan Finder (mobile-friendly): pick your section (zone), category or “Route to stand”, optional in-page simulation to see live estimated wait times. Use the sidebar “Fan Finder” link to open it in a new tab.
 
-## Learn More
+## Project structure
 
-To learn more about Next.js, take a look at the following resources:
+- `src/app/` — App Router pages and API routes
+- `src/app/api/game-dates/` — GET list of transaction dates for simulation
+- `src/app/api/simulate/` — SSE stream for simulation
+- `src/app/api/fan/` — Fan data (wait times, zones, route-to-stand)
+- `src/app/api/puck-drop/` — Puck drop time by date
+- `src/app/api/seat-zones/` — Seat zones with map coordinates
+- `src/lib/queries.ts` — SQLite queries and historical capacity
+- `scripts/seed-db.ts` — ETL: CSV/XLSX → SQLite (run via `npm run seed`)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Environment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `ANTHROPIC_API_KEY` — optional; required for the AI Insights page (set in `.env.local`).
 
-## Deploy on Vercel
+## Deploy with Docker
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+docker build -t arena-concession-optimizer .
+docker run -p 3000:3000 arena-concession-optimizer
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Ensure `data/arena.db` exists (e.g. mount a volume or run the seed during build).

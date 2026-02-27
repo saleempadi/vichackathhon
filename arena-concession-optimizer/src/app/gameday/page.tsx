@@ -12,9 +12,9 @@ export default function GameDayPage() {
   const { data: timeline } = useQuery<any[]>('gamePeriodTimeline');
 
   const dayOrder = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const sortedDays = salesByDay?.sort((a: any, b: any) =>
+  const sortedDays = salesByDay ? [...salesByDay].sort((a: any, b: any) =>
     dayOrder.indexOf(a.day_of_week) - dayOrder.indexOf(b.day_of_week)
-  );
+  ) : undefined;
 
   return (
     <div className="space-y-6">
@@ -31,7 +31,7 @@ export default function GameDayPage() {
         <CardContent>
           {attendanceVsSales && (
             <ScatterChartComponent
-              data={attendanceVsSales}
+              data={attendanceVsSales.filter((d: any) => d.attendance != null && d.total_items != null)}
               xKey="attendance"
               yKey="total_items"
               xLabel="Attendance"
@@ -126,9 +126,9 @@ export default function GameDayPage() {
                   <td className="py-2 font-medium">{row.opponent}</td>
                   <td className="py-2 text-right">{row.num_games}</td>
                   <td className="py-2 text-right">{row.avg_attendance?.toLocaleString()}</td>
-                  <td className="py-2 text-right">{Math.round(row.avg_items_per_game).toLocaleString()}</td>
+                  <td className="py-2 text-right">{Math.round(row.avg_items_per_game ?? 0).toLocaleString()}</td>
                   <td className="py-2 text-right">
-                    {row.avg_attendance ? (row.avg_items_per_game / row.avg_attendance).toFixed(2) : '-'}
+                    {row.avg_attendance && row.avg_items_per_game ? (row.avg_items_per_game / row.avg_attendance).toFixed(2) : '-'}
                   </td>
                 </tr>
               ))}

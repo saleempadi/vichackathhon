@@ -26,20 +26,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Question is required' }, { status: 400 });
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.CLAUDE_AUTH_TOKEN;
     if (!apiKey) {
       return NextResponse.json({
-        answer: 'AI insights require an ANTHROPIC_API_KEY environment variable. Set it in your .env.local file.',
-        sql: null,
-        data: null,
-      });
+        error: 'AI Insights requires a CLAUDE_AUTH_TOKEN environment variable. Add it to your .env.local file to enable this feature.',
+        code: 'AUTH_TOKEN_MISSING',
+      }, { status: 401 });
     }
 
     const client = new Anthropic({ apiKey });
 
     // Step 1: Generate SQL
     const sqlResponse = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 500,
       messages: [
         { role: 'user', content: `${SCHEMA_CONTEXT}\n\nQuestion: ${question}` },
@@ -73,7 +72,7 @@ export async function POST(req: NextRequest) {
 
     // Step 3: Interpret results
     const interpretResponse = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 800,
       messages: [
         {

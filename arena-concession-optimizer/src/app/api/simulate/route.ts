@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getDb } from '@/lib/db';
+import { getHistoricalCapacityPerStand } from '@/lib/queries';
 
 export const runtime = 'nodejs';
 
@@ -129,6 +130,13 @@ export async function GET(req: NextRequest) {
 
   const bucketDurationMinutes = bucketSeconds / 60;
 
+  // Historical capacity per stand — softer capacity + power curve for visible wait spread
+  const capacityPerStand = getHistoricalCapacityPerStand();
+  const BASE_WAIT = 1.2;
+  const WAIT_SCALE = 6;
+  const CAPACITY_FACTOR = 0.65;
+  const WAIT_CAP = 10;
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -146,12 +154,7 @@ export async function GET(req: NextRequest) {
 
         const bucket = buckets[index++];
 
-        // Simple, tunable wait-time model from the simulation plan
-        const registersPerStand = 2;
-        const serviceRatePerRegister = 0.6; // orders/min
-        const waitScaleMinutes = 12; // at utilization ~1.0
-        const serviceCapacity = registersPerStand * serviceRatePerRegister;
-
+        // Capacity from historical 75th percentile (used for utilization display only; wait uses getHistoricalCapacityPerStand)
         const locations: Record<
           string,
           {
@@ -168,14 +171,16 @@ export async function GET(req: NextRequest) {
         let maxUtilization = 0;
 
         for (const [locName, loc] of Object.entries(bucket.locations)) {
-          const ordersPerMin =
-            loc.ordersInBucket / bucketDurationMinutes || 0;
+          const itemsPerMin =
+            loc.qtyInBucket / bucketDurationMinutes || 0;
+          const capacity = capacityPerStand[locName] ?? 1.2;
+          const effectiveCapacity = capacity * CAPACITY_FACTOR;
           const utilization = Math.min(
-            1.5,
-            serviceCapacity > 0 ? ordersPerMin / serviceCapacity : 0,
+            3,
+            effectiveCapacity > 0 ? itemsPerMin / effectiveCapacity : 0,
           );
-          const waitMinutes =
-            Math.max(0, utilization - 0.6) * waitScaleMinutes;
+          const rawWait = BASE_WAIT + Math.pow(utilization, 1.2) * WAIT_SCALE;
+          const waitMinutes = Math.min(WAIT_CAP, rawWait);
 
           maxUtilization = Math.max(maxUtilization, utilization);
 
@@ -187,7 +192,7 @@ export async function GET(req: NextRequest) {
           locations[locName] = {
             orders_in_bucket: loc.ordersInBucket,
             qty_in_bucket: loc.qtyInBucket,
-            orders_per_min: Number(ordersPerMin.toFixed(2)),
+            orders_per_min: Number((loc.ordersInBucket / bucketDurationMinutes).toFixed(2)),
             utilization: Number(utilization.toFixed(2)),
             wait_minutes: Number(waitMinutes.toFixed(1)),
             crowd_index: 0, // backfilled below

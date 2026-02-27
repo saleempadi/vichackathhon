@@ -26,7 +26,8 @@ db.exec(`
     opponent TEXT,
     attendance INTEGER,
     day_of_week TEXT,
-    season TEXT
+    season TEXT,
+    puck_drop_time TEXT
   );
 
   CREATE TABLE transactions (
@@ -55,7 +56,9 @@ db.exec(`
   -- Fan-routing support tables
   CREATE TABLE seat_zones (
     zone_id TEXT PRIMARY KEY,
-    zone_label TEXT NOT NULL
+    zone_label TEXT NOT NULL,
+    map_x REAL NOT NULL DEFAULT 0,
+    map_y REAL NOT NULL DEFAULT 0
   );
 
   CREATE TABLE zone_distances (
@@ -87,7 +90,7 @@ const gameWs = gameWb.Sheets[gameWb.SheetNames[0]];
 const gameRows = xlsx.utils.sheet_to_json(gameWs) as any[];
 
 const insertGame = db.prepare(
-  "INSERT INTO games (game_date, opponent, attendance, day_of_week, season) VALUES (?, ?, ?, ?, ?)",
+  "INSERT INTO games (game_date, opponent, attendance, day_of_week, season, puck_drop_time) VALUES (?, ?, ?, ?, ?, ?)",
 );
 
 const dayMap: Record<string, string> = {
@@ -124,12 +127,29 @@ const insertGames = db.transaction(() => {
         ? `${d.y}-${String(d.y + 1).slice(2)}`
         : `${d.y - 1}-${String(d.y).slice(2)}`;
 
+    // Puck drop: try common column names from GameDetails.xlsx (e.g. "Puck Drop", "Start Time")
+    let puckDrop: string | null = null;
+    const puckDropRaw =
+      row["Puck Drop"] ?? row["Puck drop"] ?? row["Start Time"] ?? row["PuckDrop"];
+    if (puckDropRaw != null && typeof puckDropRaw !== "object") {
+      const s = String(puckDropRaw).trim();
+      const timeMatch = s.match(/(\d{1,2}):(\d{2})/);
+      if (timeMatch) {
+        const h = parseInt(timeMatch[1], 10);
+        const m = parseInt(timeMatch[2], 10);
+        puckDrop = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      } else if (/^\d{4}$/.test(s)) {
+        puckDrop = `${s.slice(0, 2)}:${s.slice(2)}`;
+      }
+    }
+
     const info = insertGame.run(
       dateStr,
       row.Event,
       row["Attendance - Scanned"] || null,
       fullDay,
       season,
+      puckDrop,
     );
     gameDateToId.set(dateStr, info.lastInsertRowid as number);
   }
@@ -213,20 +233,20 @@ console.log(`Total inserted: ${totalInserted}, skipped: ${totalSkipped}`);
 // ---------- Fan Routing Helper Tables ----------
 console.log("Building fan routing helper tables...");
 
-// Seat zones: simple lower/upper + north/south approximation
-const seatZones = [
-  { id: "LOWER_NORTH", label: "Lower Bowl North" },
-  { id: "LOWER_SOUTH", label: "Lower Bowl South" },
-  { id: "UPPER_NORTH", label: "Upper Bowl North" },
-  { id: "UPPER_SOUTH", label: "Upper Bowl South" },
+// Seat zones: simple lower/upper + north/south approximation + map coords (viewBox 580x400)
+const seatZones: { id: string; label: string; map_x: number; map_y: number }[] = [
+  { id: "LOWER_NORTH", label: "Lower Bowl North", map_x: 290, map_y: 55 },
+  { id: "LOWER_SOUTH", label: "Lower Bowl South", map_x: 290, map_y: 365 },
+  { id: "UPPER_NORTH", label: "Upper Bowl North", map_x: 160, map_y: 35 },
+  { id: "UPPER_SOUTH", label: "Upper Bowl South", map_x: 420, map_y: 365 },
 ];
 
 const insertSeatZone = db.prepare(
-  "INSERT INTO seat_zones (zone_id, zone_label) VALUES (?, ?)",
+  "INSERT INTO seat_zones (zone_id, zone_label, map_x, map_y) VALUES (?, ?, ?, ?)",
 );
 
 for (const z of seatZones) {
-  insertSeatZone.run(z.id, z.label);
+  insertSeatZone.run(z.id, z.label, z.map_x, z.map_y);
 }
 
 // Approximate walking distances (meters) from each zone to each stand

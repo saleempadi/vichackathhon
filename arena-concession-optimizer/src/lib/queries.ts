@@ -340,3 +340,104 @@ export function runQuery(sql: string) {
   }
   return db.prepare(sql).all();
 }
+
+// ---- Game dates (for simulation dropdown) ----
+export function getGameDates(): string[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT DISTINCT date FROM transactions ORDER BY date ASC').all() as { date: string }[];
+  return rows.map((r) => r.date);
+}
+
+// ---- Puck drop by game date ----
+export function getPuckDropByDate(gameDate: string): string | null {
+  const db = getDb();
+  try {
+    const row = db
+      .prepare('SELECT puck_drop_time FROM games WHERE game_date = ?')
+      .get(gameDate) as { puck_drop_time: string | null } | undefined;
+    return row?.puck_drop_time ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---- Historical capacity per stand (items/min, 75th percentile of 1-min buckets) ----
+export function getHistoricalCapacityPerStand(): Record<string, number> {
+  const db = getDb();
+  try {
+    const rows = db
+      .prepare(
+        `
+      SELECT location,
+        date,
+        SUBSTR(time, 1, 5) AS time_minute,
+        SUM(ABS(qty)) AS items_this_minute
+      FROM transactions
+      WHERE is_refund = 0
+      GROUP BY location, date, time_minute
+      `,
+      )
+      .all() as { location: string; items_this_minute: number }[];
+
+    const byLocation: Record<string, number[]> = {};
+    for (const r of rows) {
+      if (!byLocation[r.location]) byLocation[r.location] = [];
+      byLocation[r.location].push(r.items_this_minute);
+    }
+
+    const capacity: Record<string, number> = {};
+    for (const [loc, values] of Object.entries(byLocation)) {
+      values.sort((a, b) => a - b);
+      const idx = Math.floor(values.length * 0.75);
+      const p75 = values[idx] ?? values[values.length - 1] ?? 1;
+      capacity[loc] = Math.max(0.5, p75);
+    }
+
+    return capacity;
+  } catch {
+    return {};
+  }
+}
+
+// ---- Seat zones (for fan map blue dot) ----
+const DEFAULT_ZONE_COORDS: Record<string, { map_x: number; map_y: number }> = {
+  LOWER_NORTH: { map_x: 290, map_y: 55 },
+  LOWER_SOUTH: { map_x: 290, map_y: 365 },
+  UPPER_NORTH: { map_x: 160, map_y: 35 },
+  UPPER_SOUTH: { map_x: 420, map_y: 365 },
+};
+
+const FALLBACK_SEAT_ZONES: { zone_id: string; zone_label: string; map_x: number; map_y: number }[] = [
+  { zone_id: 'LOWER_NORTH', zone_label: 'Lower Bowl North', map_x: 290, map_y: 55 },
+  { zone_id: 'LOWER_SOUTH', zone_label: 'Lower Bowl South', map_x: 290, map_y: 365 },
+  { zone_id: 'UPPER_NORTH', zone_label: 'Upper Bowl North', map_x: 160, map_y: 35 },
+  { zone_id: 'UPPER_SOUTH', zone_label: 'Upper Bowl South', map_x: 420, map_y: 365 },
+];
+
+export function getSeatZones(): { zone_id: string; zone_label: string; map_x: number; map_y: number }[] {
+  const db = getDb();
+  try {
+    const rows = db
+      .prepare('SELECT zone_id, zone_label, map_x, map_y FROM seat_zones ORDER BY zone_id')
+      .all() as { zone_id: string; zone_label: string; map_x: number; map_y: number }[];
+    if (rows.length > 0) return rows;
+  } catch {
+    // map_x/map_y columns may not exist
+  }
+  try {
+    const fallback = db
+      .prepare('SELECT zone_id, zone_label FROM seat_zones ORDER BY zone_id')
+      .all() as { zone_id: string; zone_label: string }[];
+    if (fallback.length > 0) {
+      return fallback.map((r) => ({
+        zone_id: r.zone_id,
+        zone_label: r.zone_label,
+        map_x: DEFAULT_ZONE_COORDS[r.zone_id]?.map_x ?? 290,
+        map_y: DEFAULT_ZONE_COORDS[r.zone_id]?.map_y ?? 200,
+      }));
+    }
+  } catch {
+    // seat_zones table may not exist (e.g. old DB)
+  }
+  return FALLBACK_SEAT_ZONES;
+}

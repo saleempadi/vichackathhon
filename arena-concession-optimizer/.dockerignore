@@ -1,0 +1,19 @@
+node_modules
+.next
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.git
+.gitignore
+coverage
+*.tsbuildinfo
+
+# Local data exports / raw CSVs live outside this app
+Data
+
+# Editor / OS files
+.vscode
+.idea
+*.swp
+*.DS_Store
+
